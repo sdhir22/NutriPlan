@@ -1,4 +1,8 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# NutriPlan
+
+Meal plans and grocery lists tailored to your dietary needs, powered by the Spoonacular API and an LLM for natural language. Built with [Next.js](https://nextjs.org) and deployed on Vercel.
+
+This project was bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
 
