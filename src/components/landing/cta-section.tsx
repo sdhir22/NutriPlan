@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export function CtaSection() {
   return (
     <section
@@ -18,9 +20,12 @@ export function CtaSection() {
           updates.
         </p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
-          <span className="inline-flex h-12 w-full max-w-xs items-center justify-center rounded-full border border-background/30 bg-background/10 px-6 text-sm font-medium text-background backdrop-blur-sm">
-            Email signup coming next
-          </span>
+          <Link
+            href="/plan"
+            className="inline-flex h-12 w-full max-w-xs items-center justify-center rounded-full border border-background/30 bg-background/10 px-6 text-sm font-medium text-background backdrop-blur-sm transition-opacity hover:opacity-90"
+          >
+            Try the planner now
+          </Link>
           <a
             href="https://github.com/sdhir22/NutriPlan"
             target="_blank"

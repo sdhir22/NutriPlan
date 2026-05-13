@@ -23,12 +23,12 @@ export function SiteHeader() {
           >
             How it works
           </a>
-          <a
-            href="#get-started"
+          <Link
+            href="/plan"
             className="rounded-full bg-accent px-4 py-2 text-sm text-background transition-colors hover:bg-accent-hover"
           >
             Get started
-          </a>
+          </Link>
         </nav>
       </div>
     </header>

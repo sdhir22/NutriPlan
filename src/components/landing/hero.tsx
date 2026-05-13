@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export function Hero() {
   return (
     <section className="relative overflow-hidden px-4 pb-20 pt-16 sm:px-6 sm:pb-28 sm:pt-24">
@@ -22,12 +24,12 @@ export function Hero() {
           ready-to-shop list.
         </p>
         <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
-          <a
-            href="#get-started"
+          <Link
+            href="/plan"
             className="inline-flex h-12 min-w-[200px] items-center justify-center rounded-full bg-accent px-8 text-sm font-semibold text-background shadow-sm transition-colors hover:bg-accent-hover"
           >
-            Join the waitlist
-          </a>
+            Build my meal plan
+          </Link>
           <a
             href="#how-it-works"
             className="inline-flex h-12 min-w-[200px] items-center justify-center rounded-full border border-border bg-card px-8 text-sm font-semibold text-foreground transition-colors hover:border-accent/40"
