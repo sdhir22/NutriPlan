@@ -205,24 +205,40 @@ Rules:
     const allRecipes = await getRecipesBulk(allIds);
     const recipeMap = new Map(allRecipes.map((r) => [r.id, r]));
 
-    // Step 3: Assign recipes to 7 days deterministically (no LLM — avoids hallucinated IDs)
-    // Filter each pool to IDs we actually have details for, then spread across 7 days.
-    const validBreakfast = breakfastPool.filter((r) => recipeMap.has(r.id));
-    const validLunch = lunchPool.filter((r) => recipeMap.has(r.id));
-    const validDinner = dinnerPool.filter((r) => recipeMap.has(r.id));
+    // Step 3: Assign recipes to 7 days deterministically (no LLM — avoids hallucinated IDs).
+    // Spoonacular returns heavily overlapping results for lunch and dinner (both use
+    // "main course"), so combine them into one deduplicated pool and split it in half —
+    // first half goes to lunch, second half to dinner, guaranteeing no same-day duplicates.
+    const seenMainCourse = new Set<number>();
+    const mainCoursePool: typeof lunchPool = [];
+    for (const r of [...lunchPool, ...dinnerPool]) {
+      if (!seenMainCourse.has(r.id)) {
+        seenMainCourse.add(r.id);
+        mainCoursePool.push(r);
+      }
+    }
+    const splitAt = Math.ceil(mainCoursePool.length / 2);
+    const breakfastIds = new Set(breakfastPool.map((r) => r.id));
+    const splitLunch = mainCoursePool.slice(0, splitAt).filter((r) => !breakfastIds.has(r.id));
+    const splitDinner = mainCoursePool.slice(splitAt).filter((r) => !breakfastIds.has(r.id));
 
-    // Use whichever non-empty pool can cover a slot; if a slot pool is entirely empty,
-    // fall back to any available pool so we always produce a full 7-day plan.
-    const bFallback = validBreakfast.length > 0 ? validBreakfast : (validLunch.length > 0 ? validLunch : validDinner);
-    const lFallback = validLunch.length > 0 ? validLunch : (validBreakfast.length > 0 ? validBreakfast : validDinner);
-    const dFallback = validDinner.length > 0 ? validDinner : (validLunch.length > 0 ? validLunch : validBreakfast);
+    const validBreakfast = breakfastPool.filter((r) => recipeMap.has(r.id));
+    const validLunch = splitLunch.filter((r) => recipeMap.has(r.id));
+    const validDinner = splitDinner.filter((r) => recipeMap.has(r.id));
+
+    // If a split half is empty, borrow from the other half with a half-pool offset so
+    // same-day lunch and dinner are never the same recipe.
+    const lFallback = validLunch.length > 0 ? validLunch : validBreakfast;
+    const rawDFallback = validDinner.length > 0 ? validDinner : (validLunch.length > 0 ? validLunch : validBreakfast);
+    const dOffset = rawDFallback === lFallback ? Math.ceil(rawDFallback.length / 2) : 0;
+    const bFallback = validBreakfast.length > 0 ? validBreakfast : lFallback;
 
     const days: DayPlan[] = DAY_LABELS.map((dayLabel, i) => ({
       day: i + 1,
       dayLabel,
       breakfast: recipeMap.get(bFallback[i % bFallback.length].id)!,
       lunch: recipeMap.get(lFallback[i % lFallback.length].id)!,
-      dinner: recipeMap.get(dFallback[i % dFallback.length].id)!,
+      dinner: recipeMap.get(rawDFallback[(i + dOffset) % rawDFallback.length].id)!,
     }));
 
     const mealPlan: MealPlan = {
