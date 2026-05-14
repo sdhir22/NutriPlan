@@ -1,10 +1,13 @@
 import { generateObject } from "ai";
-import { google } from "@ai-sdk/google";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+
+const google = createGoogleGenerativeAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
 import { z } from "zod";
 import {
   searchRecipes,
   getRecipesBulk,
-  getRandomRecipes,
   SpoonacularError,
 } from "@/lib/spoonacular";
 import type {
@@ -16,6 +19,7 @@ import type {
   GeneratePlanResponse,
   Recipe,
   SpoonacularSearchParams,
+  SpoonacularSearchResult,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -58,20 +62,6 @@ const constraintParamsSchema = z.object({
   constraintSummary: z.string(),
 });
 
-const mealPlanAssignmentSchema = z.object({
-  days: z
-    .array(
-      z.object({
-        day: z.number().int().min(1).max(7),
-        dayLabel: z.enum(DAY_LABELS),
-        breakfastId: z.number().int(),
-        lunchId: z.number().int(),
-        dinnerId: z.number().int(),
-      })
-    )
-    .length(7),
-  constraintSummary: z.string(),
-});
 
 function buildGroceryList(recipes: Recipe[]): GroceryList {
   const categoryMap = new Map<string, Map<string, GroceryItem>>();
@@ -141,7 +131,8 @@ export async function POST(request: Request) {
   try {
     // Step 1: Gemini parses constraints into Spoonacular params
     const { object: parsed } = await generateObject({
-      model: google("gemini-2.5-flash-preview-04-17"),
+      model: google("gemini-2.5-flash"),
+      maxRetries: 0,
       schema: constraintParamsSchema,
       prompt: `Parse these dietary constraints into Spoonacular API parameters.
 
@@ -161,29 +152,41 @@ Rules:
 
     const searchParams: SpoonacularSearchParams = { ...parsed };
 
-    // Step 2: Fetch recipe pools in parallel (breakfast / lunch / dinner)
-    let [breakfastPool, lunchPool, dinnerPool] = await Promise.all([
-      searchRecipes(searchParams, "breakfast", 8),
-      searchRecipes(searchParams, "lunch", 8),
-      searchRecipes(searchParams, "dinner", 8),
-    ]);
+    // Progressive constraint relaxation: hard constraints (intolerances) are always kept;
+    // soft constraints (cuisine, timing, macros) are dropped tier by tier if results are empty.
+    async function searchWithRelaxation(
+      mealType: "breakfast" | "lunch" | "dinner"
+    ): Promise<SpoonacularSearchResult[]> {
+      // Tier 1: all constraints
+      let results = await searchRecipes(searchParams, mealType, 8);
+      if (results.length > 0) return results;
 
-    // Fallback to random if any pool is empty
-    if (breakfastPool.length === 0) {
-      const tags = ["breakfast", parsed.diet].filter(Boolean) as string[];
-      const fallback = await getRandomRecipes(tags, 8);
-      breakfastPool = fallback.map((r) => ({ id: r.id, title: r.title, image: r.image, imageType: r.imageType }));
+      // Tier 2: keep diet + intolerances only (drop cuisine, timing, macros)
+      const tier2: SpoonacularSearchParams = {
+        constraintSummary: searchParams.constraintSummary,
+        diet: parsed.diet,
+        intolerances: parsed.intolerances,
+      };
+      results = await searchRecipes(tier2, mealType, 8);
+      if (results.length > 0) return results;
+
+      // Tier 3: intolerances only (safest hard constraint)
+      if (parsed.intolerances) {
+        const tier3: SpoonacularSearchParams = {
+          constraintSummary: searchParams.constraintSummary,
+          intolerances: parsed.intolerances,
+        };
+        results = await searchRecipes(tier3, mealType, 8);
+      }
+      return results;
     }
-    if (lunchPool.length === 0) {
-      const tags = ["lunch", parsed.diet].filter(Boolean) as string[];
-      const fallback = await getRandomRecipes(tags, 8);
-      lunchPool = fallback.map((r) => ({ id: r.id, title: r.title, image: r.image, imageType: r.imageType }));
-    }
-    if (dinnerPool.length === 0) {
-      const tags = ["dinner", parsed.diet].filter(Boolean) as string[];
-      const fallback = await getRandomRecipes(tags, 8);
-      dinnerPool = fallback.map((r) => ({ id: r.id, title: r.title, image: r.image, imageType: r.imageType }));
-    }
+
+    // Step 2: Fetch recipe pools in parallel with constraint-preserving fallback
+    const [breakfastPool, lunchPool, dinnerPool] = await Promise.all([
+      searchWithRelaxation("breakfast"),
+      searchWithRelaxation("lunch"),
+      searchWithRelaxation("dinner"),
+    ]);
 
     if (breakfastPool.length === 0 && lunchPool.length === 0 && dinnerPool.length === 0) {
       return Response.json(
@@ -202,45 +205,29 @@ Rules:
     const allRecipes = await getRecipesBulk(allIds);
     const recipeMap = new Map(allRecipes.map((r) => [r.id, r]));
 
-    // Step 3: Gemini assigns recipes to 7 days
-    const { object: assignment } = await generateObject({
-      model: google("gemini-2.5-flash-preview-04-17"),
-      schema: mealPlanAssignmentSchema,
-      prompt: `Create a 7-day meal plan using ONLY the recipe IDs listed below.
+    // Step 3: Assign recipes to 7 days deterministically (no LLM — avoids hallucinated IDs)
+    // Filter each pool to IDs we actually have details for, then spread across 7 days.
+    const validBreakfast = breakfastPool.filter((r) => recipeMap.has(r.id));
+    const validLunch = lunchPool.filter((r) => recipeMap.has(r.id));
+    const validDinner = dinnerPool.filter((r) => recipeMap.has(r.id));
 
-Available breakfast recipes: ${JSON.stringify(breakfastPool.map((r) => ({ id: r.id, title: r.title })))}
-Available lunch recipes: ${JSON.stringify(lunchPool.map((r) => ({ id: r.id, title: r.title })))}
-Available dinner recipes: ${JSON.stringify(dinnerPool.map((r) => ({ id: r.id, title: r.title })))}
+    // Use whichever non-empty pool can cover a slot; if a slot pool is entirely empty,
+    // fall back to any available pool so we always produce a full 7-day plan.
+    const bFallback = validBreakfast.length > 0 ? validBreakfast : (validLunch.length > 0 ? validLunch : validDinner);
+    const lFallback = validLunch.length > 0 ? validLunch : (validBreakfast.length > 0 ? validBreakfast : validDinner);
+    const dFallback = validDinner.length > 0 ? validDinner : (validLunch.length > 0 ? validLunch : validBreakfast);
 
-User constraints: "${constraints.trim()}"
-
-Rules:
-- Assign days 1 (Monday) through 7 (Sunday)
-- Use ONLY IDs from the breakfast list for breakfastId, lunch list for lunchId, dinner list for dinnerId
-- Vary meals — avoid repeating the same recipe on back-to-back days where possible
-- It is OK to repeat if the pool is small
-- constraintSummary: one sentence on what the plan achieves`,
-    });
-
-    // Resolve recipe IDs → full Recipe objects, substituting if Gemini hallucinated an ID
-    const getRecipeOrFallback = (id: number, pool: typeof breakfastPool): Recipe => {
-      if (recipeMap.has(id)) return recipeMap.get(id)!;
-      const fallbackId = pool.find((r) => recipeMap.has(r.id))?.id;
-      if (fallbackId) return recipeMap.get(fallbackId)!;
-      return allRecipes[0];
-    };
-
-    const days: DayPlan[] = assignment.days.map((d) => ({
-      day: d.day,
-      dayLabel: d.dayLabel,
-      breakfast: getRecipeOrFallback(d.breakfastId, breakfastPool),
-      lunch: getRecipeOrFallback(d.lunchId, lunchPool),
-      dinner: getRecipeOrFallback(d.dinnerId, dinnerPool),
+    const days: DayPlan[] = DAY_LABELS.map((dayLabel, i) => ({
+      day: i + 1,
+      dayLabel,
+      breakfast: recipeMap.get(bFallback[i % bFallback.length].id)!,
+      lunch: recipeMap.get(lFallback[i % lFallback.length].id)!,
+      dinner: recipeMap.get(dFallback[i % dFallback.length].id)!,
     }));
 
     const mealPlan: MealPlan = {
       days,
-      constraintSummary: assignment.constraintSummary,
+      constraintSummary: parsed.constraintSummary,
       generatedAt: new Date().toISOString(),
     };
 
@@ -256,10 +243,22 @@ Rules:
       return Response.json({ error: err.message, code: err.code }, { status });
     }
 
-    // Gemini rate limit
-    if (err instanceof Error && err.message.includes("429")) {
+    // Gemini rate limit / overload — AI SDK wraps as AI_APICallError with statusCode 429 or 503
+    const statusCode =
+      typeof err === "object" && err !== null && "statusCode" in err
+        ? (err as { statusCode: number }).statusCode
+        : null;
+    const isTransient =
+      statusCode === 429 ||
+      statusCode === 503 ||
+      (err instanceof Error &&
+        (err.message.includes("429") ||
+          err.message.toLowerCase().includes("high demand") ||
+          err.message.toLowerCase().includes("overloaded")));
+    if (isTransient) {
+      console.error("[generate-plan] transient AI error:", err);
       return Response.json(
-        { error: "AI service is busy. Please try again in a moment.", code: "AI_RATE_LIMIT" },
+        { error: "AI service is busy. Please wait a moment and try again.", code: "AI_RATE_LIMIT" },
         { status: 429 }
       );
     }
