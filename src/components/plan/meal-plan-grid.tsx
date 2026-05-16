@@ -7,9 +7,23 @@ export function MealPlanGrid({ mealPlan }: { mealPlan: MealPlan }) {
       <h2 className="font-display text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
         Your Week
       </h2>
-      {mealPlan.constraintSummary && (
-        <p className="mt-2 text-sm text-muted">{mealPlan.constraintSummary}</p>
-      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {[
+          { label: "Breakfast", summary: mealPlan.breakfastSummary },
+          { label: "Lunch", summary: mealPlan.lunchSummary },
+          { label: "Dinner", summary: mealPlan.dinnerSummary },
+        ].map(({ label, summary }) =>
+          summary ? (
+            <span
+              key={label}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted"
+            >
+              <span className="font-semibold text-foreground">{label}:</span>
+              {summary}
+            </span>
+          ) : null
+        )}
+      </div>
 
       <div className="mt-6 overflow-x-auto rounded-2xl border border-border">
         <div className="min-w-[756px] p-4">

@@ -46,7 +46,9 @@ export interface DayPlan {
 
 export interface MealPlan {
   days: DayPlan[];
-  constraintSummary: string;
+  breakfastSummary: string;
+  lunchSummary: string;
+  dinnerSummary: string;
   generatedAt: string;
 }
 
@@ -69,7 +71,9 @@ export interface GroceryList {
 }
 
 export interface GeneratePlanRequest {
-  constraints: string;
+  breakfastConstraints: string;
+  lunchConstraints: string;
+  dinnerConstraints: string;
 }
 
 export interface GeneratePlanResponse {

@@ -12,20 +12,64 @@ type PlanState =
   | { status: "success"; data: GeneratePlanResponse }
   | { status: "error"; message: string };
 
-const EXAMPLES = [
-  "High protein, no dairy, Mediterranean dinners",
-  "Vegetarian, under 500 calories per meal, quick breakfasts",
-  "Vegan, gluten-free, kid-friendly family meals",
-  "Keto, no seafood, Italian cuisine",
+const BREAKFAST_EXAMPLES = [
+  "Quick, high protein, no dairy",
+  "Vegan, under 400 calories, sweet options",
+  "Keto-friendly, egg-based, under 15 min",
 ];
 
+const LUNCH_EXAMPLES = [
+  "Light, Mediterranean, under 500 calories",
+  "High fiber, vegetarian, salads and soups",
+  "Kid-friendly, gluten-free, quick assembly",
+];
+
+const DINNER_EXAMPLES = [
+  "High protein, no seafood, Italian cuisine",
+  "Family-style, one-pot, hearty and warm",
+  "Vegan, Asian cuisine, under 600 calories",
+];
+
+const MEAL_SLOTS = [
+  {
+    key: "breakfast" as const,
+    label: "Breakfast",
+    placeholder: "e.g. quick, high protein, no dairy, egg-based",
+    examples: BREAKFAST_EXAMPLES,
+  },
+  {
+    key: "lunch" as const,
+    label: "Lunch",
+    placeholder: "e.g. light, Mediterranean, salads and soups, under 500 cal",
+    examples: LUNCH_EXAMPLES,
+  },
+  {
+    key: "dinner" as const,
+    label: "Dinner",
+    placeholder: "e.g. high protein, Italian cuisine, no seafood, family-style",
+    examples: DINNER_EXAMPLES,
+  },
+] as const;
+
+type MealKey = "breakfast" | "lunch" | "dinner";
+
 export function ConstraintForm() {
-  const [constraints, setConstraints] = useState("");
+  const [values, setValues] = useState<Record<MealKey, string>>({
+    breakfast: "",
+    lunch: "",
+    dinner: "",
+  });
   const [state, setState] = useState<PlanState>({ status: "idle" });
+
+  function setValue(key: MealKey, value: string) {
+    setValues((prev) => ({ ...prev, [key]: value }));
+  }
+
+  const allFilled = Object.values(values).every((v) => v.trim().length >= 5);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (constraints.trim().length < 5) return;
+    if (!allFilled) return;
 
     setState({ status: "loading" });
 
@@ -33,7 +77,11 @@ export function ConstraintForm() {
       const res = await fetch("/api/generate-plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ constraints }),
+        body: JSON.stringify({
+          breakfastConstraints: values.breakfast,
+          lunchConstraints: values.lunch,
+          dinnerConstraints: values.dinner,
+        }),
       });
 
       const data = await res.json();
@@ -54,53 +102,58 @@ export function ConstraintForm() {
   }
 
   const isLoading = state.status === "loading";
-  const charCount = constraints.length;
 
   return (
     <div>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="space-y-2">
-          <label
-            htmlFor="constraints"
-            className="block text-sm font-medium text-foreground"
-          >
-            Describe your dietary needs
-          </label>
-          <textarea
-            id="constraints"
-            value={constraints}
-            onChange={(e) => setConstraints(e.target.value)}
-            placeholder="e.g. high protein, no dairy, kid-friendly dinners, Mediterranean cuisine, under 600 calories per meal"
-            rows={4}
-            maxLength={1000}
-            disabled={isLoading}
-            className="w-full resize-none rounded-2xl border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50"
-          />
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-muted">{charCount}/1000 characters</p>
-          </div>
-        </div>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {MEAL_SLOTS.map(({ key, label, placeholder, examples }) => {
+          const value = values[key];
+          const isEmpty = value.length === 0 && state.status === "idle";
 
-        {/* Example prompts */}
-        {state.status === "idle" && constraints.length === 0 && (
-          <div className="flex flex-wrap gap-2">
-            {EXAMPLES.map((example) => (
-              <button
-                key={example}
-                type="button"
-                onClick={() => setConstraints(example)}
-                className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+          return (
+            <div key={key} className="space-y-2">
+              <label
+                htmlFor={`constraint-${key}`}
+                className="block text-sm font-semibold text-foreground"
               >
-                {example}
-              </button>
-            ))}
-          </div>
-        )}
+                {label}
+              </label>
+              <textarea
+                id={`constraint-${key}`}
+                value={value}
+                onChange={(e) => setValue(key, e.target.value)}
+                placeholder={placeholder}
+                rows={3}
+                maxLength={1000}
+                disabled={isLoading}
+                className="w-full resize-none rounded-2xl border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50"
+              />
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted">{value.length}/1000</p>
+              </div>
+
+              {isEmpty && (
+                <div className="flex flex-wrap gap-2">
+                  {examples.map((example) => (
+                    <button
+                      key={example}
+                      type="button"
+                      onClick={() => setValue(key, example)}
+                      className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+                    >
+                      {example}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         <div className="flex gap-3">
           <button
             type="submit"
-            disabled={isLoading || constraints.trim().length < 5}
+            disabled={isLoading || !allFilled}
             className="inline-flex h-11 min-w-[180px] items-center justify-center rounded-full bg-accent px-8 text-sm font-semibold text-background shadow-sm transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isLoading ? "Generating…" : "Generate Meal Plan"}

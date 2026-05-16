@@ -62,6 +62,24 @@ const constraintParamsSchema = z.object({
   constraintSummary: z.string(),
 });
 
+type ParsedConstraints = z.infer<typeof constraintParamsSchema>;
+
+function buildParsePrompt(mealType: string, constraints: string): string {
+  return `Parse these dietary constraints for ${mealType} into Spoonacular API parameters.
+
+Constraints: "${constraints.trim()}"
+
+Rules:
+- diet: only use exact Spoonacular diet types (vegetarian, vegan, gluten free, ketogenic, paleo, primal, low fodmap, whole30)
+- intolerances: comma-separated from: dairy, egg, gluten, peanut, seafood, sesame, shellfish, soy, tree nut, wheat
+- cuisine: comma-separated Spoonacular cuisine names (e.g. "italian,mediterranean,asian")
+- "high protein" → minProtein: 30
+- "low carb" or "keto" → maxCarbs: 20
+- "no dairy" → intolerances includes "dairy"
+- "quick" or "under 30 min" → maxReadyTime: 30
+- "kid-friendly" or "family" → query: "kid-friendly"
+- constraintSummary: 1-2 sentences summarising what you understood in plain English`;
+}
 
 function buildGroceryList(recipes: Recipe[]): GroceryList {
   const categoryMap = new Map<string, Map<string, GroceryItem>>();
@@ -103,8 +121,47 @@ function buildGroceryList(recipes: Recipe[]): GroceryList {
   return { categories, totalItems };
 }
 
+function validateConstraint(value: unknown, fieldName: string): string | null {
+  if (typeof value !== "string" || value.trim().length < 5) {
+    return `"${fieldName}" must be at least 5 characters.`;
+  }
+  if (value.length > 1000) {
+    return `"${fieldName}" must be 1000 characters or fewer.`;
+  }
+  return null;
+}
+
+async function searchWithRelaxation(
+  mealType: "breakfast" | "lunch" | "dinner",
+  params: SpoonacularSearchParams,
+  parsed: ParsedConstraints
+): Promise<SpoonacularSearchResult[]> {
+  // Tier 1: all constraints
+  let results = await searchRecipes(params, mealType, 8);
+  if (results.length > 0) return results;
+
+  // Tier 2: keep diet + intolerances only (drop cuisine, timing, macros)
+  const tier2: SpoonacularSearchParams = {
+    constraintSummary: params.constraintSummary,
+    diet: parsed.diet,
+    intolerances: parsed.intolerances,
+  };
+  results = await searchRecipes(tier2, mealType, 8);
+  if (results.length > 0) return results;
+
+  // Tier 3: intolerances only (safest hard constraint)
+  if (parsed.intolerances) {
+    const tier3: SpoonacularSearchParams = {
+      constraintSummary: params.constraintSummary,
+      intolerances: parsed.intolerances,
+    };
+    results = await searchRecipes(tier3, mealType, 8);
+  }
+  return results;
+}
+
 export async function POST(request: Request) {
-  let body: { constraints?: unknown };
+  let body: { breakfastConstraints?: unknown; lunchConstraints?: unknown; dinnerConstraints?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -114,78 +171,46 @@ export async function POST(request: Request) {
     );
   }
 
-  const constraints = body.constraints;
-  if (typeof constraints !== "string" || constraints.trim().length < 5) {
-    return Response.json(
-      { error: "Please describe your dietary needs (at least 5 characters).", code: "INVALID_INPUT" },
-      { status: 400 }
-    );
+  const bError = validateConstraint(body.breakfastConstraints, "breakfastConstraints");
+  const lError = validateConstraint(body.lunchConstraints, "lunchConstraints");
+  const dError = validateConstraint(body.dinnerConstraints, "dinnerConstraints");
+  const validationError = bError ?? lError ?? dError;
+  if (validationError) {
+    return Response.json({ error: validationError, code: "INVALID_INPUT" }, { status: 400 });
   }
-  if (constraints.length > 1000) {
-    return Response.json(
-      { error: "Description too long (max 1000 characters).", code: "INVALID_INPUT" },
-      { status: 400 }
-    );
-  }
+
+  const breakfastConstraints = (body.breakfastConstraints as string).trim();
+  const lunchConstraints = (body.lunchConstraints as string).trim();
+  const dinnerConstraints = (body.dinnerConstraints as string).trim();
 
   try {
-    // Step 1: Gemini parses constraints into Spoonacular params
-    const { object: parsed } = await generateObject({
-      model: google("gemini-2.5-flash"),
-      maxRetries: 0,
-      schema: constraintParamsSchema,
-      prompt: `Parse these dietary constraints into Spoonacular API parameters.
+    // Step 1: Parse all three constraint sets in parallel with Gemini
+    const [{ object: bParsed }, { object: lParsed }, { object: dParsed }] = await Promise.all([
+      generateObject({
+        model: google("gemini-2.5-flash"),
+        maxRetries: 0,
+        schema: constraintParamsSchema,
+        prompt: buildParsePrompt("breakfast", breakfastConstraints),
+      }),
+      generateObject({
+        model: google("gemini-2.5-flash"),
+        maxRetries: 0,
+        schema: constraintParamsSchema,
+        prompt: buildParsePrompt("lunch", lunchConstraints),
+      }),
+      generateObject({
+        model: google("gemini-2.5-flash"),
+        maxRetries: 0,
+        schema: constraintParamsSchema,
+        prompt: buildParsePrompt("dinner", dinnerConstraints),
+      }),
+    ]);
 
-Constraints: "${constraints.trim()}"
-
-Rules:
-- diet: only use exact Spoonacular diet types (vegetarian, vegan, gluten free, ketogenic, paleo, primal, low fodmap, whole30)
-- intolerances: comma-separated from: dairy, egg, gluten, peanut, seafood, sesame, shellfish, soy, tree nut, wheat
-- cuisine: comma-separated Spoonacular cuisine names (e.g. "italian,mediterranean,asian")
-- "high protein" → minProtein: 30
-- "low carb" or "keto" → maxCarbs: 20
-- "no dairy" → intolerances includes "dairy"
-- "quick" or "under 30 min" → maxReadyTime: 30
-- "kid-friendly" or "family" → query: "kid-friendly"
-- constraintSummary: 1-2 sentences summarising what you understood in plain English`,
-    });
-
-    const searchParams: SpoonacularSearchParams = { ...parsed };
-
-    // Progressive constraint relaxation: hard constraints (intolerances) are always kept;
-    // soft constraints (cuisine, timing, macros) are dropped tier by tier if results are empty.
-    async function searchWithRelaxation(
-      mealType: "breakfast" | "lunch" | "dinner"
-    ): Promise<SpoonacularSearchResult[]> {
-      // Tier 1: all constraints
-      let results = await searchRecipes(searchParams, mealType, 8);
-      if (results.length > 0) return results;
-
-      // Tier 2: keep diet + intolerances only (drop cuisine, timing, macros)
-      const tier2: SpoonacularSearchParams = {
-        constraintSummary: searchParams.constraintSummary,
-        diet: parsed.diet,
-        intolerances: parsed.intolerances,
-      };
-      results = await searchRecipes(tier2, mealType, 8);
-      if (results.length > 0) return results;
-
-      // Tier 3: intolerances only (safest hard constraint)
-      if (parsed.intolerances) {
-        const tier3: SpoonacularSearchParams = {
-          constraintSummary: searchParams.constraintSummary,
-          intolerances: parsed.intolerances,
-        };
-        results = await searchRecipes(tier3, mealType, 8);
-      }
-      return results;
-    }
-
-    // Step 2: Fetch recipe pools in parallel with constraint-preserving fallback
+    // Step 2: Fetch recipe pools in parallel, each with its own parsed params
     const [breakfastPool, lunchPool, dinnerPool] = await Promise.all([
-      searchWithRelaxation("breakfast"),
-      searchWithRelaxation("lunch"),
-      searchWithRelaxation("dinner"),
+      searchWithRelaxation("breakfast", { ...bParsed }, bParsed),
+      searchWithRelaxation("lunch", { ...lParsed }, lParsed),
+      searchWithRelaxation("dinner", { ...dParsed }, dParsed),
     ]);
 
     if (breakfastPool.length === 0 && lunchPool.length === 0 && dinnerPool.length === 0) {
@@ -205,10 +230,9 @@ Rules:
     const allRecipes = await getRecipesBulk(allIds);
     const recipeMap = new Map(allRecipes.map((r) => [r.id, r]));
 
-    // Step 3: Assign recipes to 7 days deterministically (no LLM — avoids hallucinated IDs).
-    // Spoonacular returns heavily overlapping results for lunch and dinner (both use
-    // "main course"), so combine them into one deduplicated pool and split it in half —
-    // first half goes to lunch, second half to dinner, guaranteeing no same-day duplicates.
+    // Step 3: Assign recipes to 7 days deterministically.
+    // Combine lunch + dinner pools (both use "main course") into one deduplicated pool,
+    // split in half — first half to lunch, second half to dinner — to prevent same-day duplicates.
     const seenMainCourse = new Set<number>();
     const mainCoursePool: typeof lunchPool = [];
     for (const r of [...lunchPool, ...dinnerPool]) {
@@ -226,8 +250,6 @@ Rules:
     const validLunch = splitLunch.filter((r) => recipeMap.has(r.id));
     const validDinner = splitDinner.filter((r) => recipeMap.has(r.id));
 
-    // If a split half is empty, borrow from the other half with a half-pool offset so
-    // same-day lunch and dinner are never the same recipe.
     const lFallback = validLunch.length > 0 ? validLunch : validBreakfast;
     const rawDFallback = validDinner.length > 0 ? validDinner : (validLunch.length > 0 ? validLunch : validBreakfast);
     const dOffset = rawDFallback === lFallback ? Math.ceil(rawDFallback.length / 2) : 0;
@@ -243,11 +265,12 @@ Rules:
 
     const mealPlan: MealPlan = {
       days,
-      constraintSummary: parsed.constraintSummary,
+      breakfastSummary: bParsed.constraintSummary,
+      lunchSummary: lParsed.constraintSummary,
+      dinnerSummary: dParsed.constraintSummary,
       generatedAt: new Date().toISOString(),
     };
 
-    // Build grocery list from all assigned recipes (server-side, deterministic)
     const assignedRecipes = days.flatMap((d) => [d.breakfast, d.lunch, d.dinner]);
     const groceryList = buildGroceryList(assignedRecipes);
 
@@ -259,7 +282,6 @@ Rules:
       return Response.json({ error: err.message, code: err.code }, { status });
     }
 
-    // Gemini rate limit / overload — AI SDK wraps as AI_APICallError with statusCode 429 or 503
     const statusCode =
       typeof err === "object" && err !== null && "statusCode" in err
         ? (err as { statusCode: number }).statusCode
