@@ -12,9 +12,6 @@ export function Hero() {
         aria-hidden
       />
       <div className="relative mx-auto max-w-3xl text-center">
-        <p className="mb-4 text-sm font-medium uppercase tracking-widest text-accent">
-          Spoonacular + LLM
-        </p>
         <h1 className="font-display text-4xl font-semibold leading-[1.1] tracking-tight text-foreground sm:text-5xl sm:leading-[1.08]">
           Meal plans and grocery lists that actually fit how you eat.
         </h1>
