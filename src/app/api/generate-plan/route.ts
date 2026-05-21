@@ -188,19 +188,19 @@ export async function POST(request: Request) {
     const [{ object: bParsed }, { object: lParsed }, { object: dParsed }] = await Promise.all([
       generateObject({
         model: google("gemini-2.5-flash"),
-        maxRetries: 0,
+        maxRetries: 2,
         schema: constraintParamsSchema,
         prompt: buildParsePrompt("breakfast", breakfastConstraints),
       }),
       generateObject({
         model: google("gemini-2.5-flash"),
-        maxRetries: 0,
+        maxRetries: 2,
         schema: constraintParamsSchema,
         prompt: buildParsePrompt("lunch", lunchConstraints),
       }),
       generateObject({
         model: google("gemini-2.5-flash"),
-        maxRetries: 0,
+        maxRetries: 2,
         schema: constraintParamsSchema,
         prompt: buildParsePrompt("dinner", dinnerConstraints),
       }),
@@ -286,9 +286,28 @@ export async function POST(request: Request) {
       typeof err === "object" && err !== null && "statusCode" in err
         ? (err as { statusCode: number }).statusCode
         : null;
+    const isRetryable =
+      typeof err === "object" && err !== null && "isRetryable" in err
+        ? (err as { isRetryable: boolean }).isRetryable === true
+        : false;
+    const causeCode =
+      typeof err === "object" && err !== null && "cause" in err && err.cause
+        ? (err.cause as { code?: string }).code
+        : undefined;
+    const isConnectError =
+      causeCode === "UND_ERR_CONNECT_TIMEOUT" ||
+      causeCode === "UND_ERR_SOCKET" ||
+      causeCode === "ECONNRESET" ||
+      causeCode === "ETIMEDOUT" ||
+      causeCode === "ENOTFOUND" ||
+      (err instanceof Error &&
+        (err.message.toLowerCase().includes("connect timeout") ||
+          err.message.toLowerCase().includes("cannot connect")));
     const isTransient =
       statusCode === 429 ||
       statusCode === 503 ||
+      isRetryable ||
+      isConnectError ||
       (err instanceof Error &&
         (err.message.includes("429") ||
           err.message.toLowerCase().includes("high demand") ||
