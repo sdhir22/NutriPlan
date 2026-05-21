@@ -1,6 +1,7 @@
 export interface SpoonacularIngredient {
   id: number;
   name: string;
+  nameClean?: string;
   original: string;
   amount: number;
   unit: string;
@@ -52,11 +53,16 @@ export interface MealPlan {
   generatedAt: string;
 }
 
-export interface GroceryItem {
-  name: string;
+export interface GroceryQuantity {
   amount: number;
   unit: string;
-  original: string;
+}
+
+export interface GroceryItem {
+  id: number;
+  name: string;
+  quantities: GroceryQuantity[];
+  toTaste: boolean;
   aisle: string;
 }
 

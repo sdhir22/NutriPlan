@@ -82,38 +82,72 @@ Rules:
 }
 
 function buildGroceryList(recipes: Recipe[]): GroceryList {
-  const categoryMap = new Map<string, Map<string, GroceryItem>>();
+  // First pass: group by Spoonacular ingredient id (canonical identifier).
+  // Within each id, sub-aggregate amounts by normalized unit. Track aisle
+  // and best display name from the first occurrence.
+  const itemsById = new Map<number, GroceryItem>();
+  const unitTotals = new Map<number, Map<string, number>>();
 
   for (const recipe of recipes) {
     for (const ing of recipe.extendedIngredients ?? []) {
-      const category = ing.aisle?.trim() || "Other";
-      const key = ing.name.toLowerCase().trim() + "|" + ing.unit.toLowerCase().trim();
+      const aisle = ing.aisle?.trim() || "Other";
+      const rawUnit = ing.unit?.trim() ?? "";
+      const normalizedUnit = rawUnit.toLowerCase();
+      const isToTaste = normalizedUnit === "servings";
+      const displayName = ing.nameClean?.trim() || ing.name.trim();
 
-      if (!categoryMap.has(category)) {
-        categoryMap.set(category, new Map());
+      let item = itemsById.get(ing.id);
+      if (!item) {
+        item = {
+          id: ing.id,
+          name: displayName,
+          quantities: [],
+          toTaste: false,
+          aisle,
+        };
+        itemsById.set(ing.id, item);
+        unitTotals.set(ing.id, new Map());
       }
-      const catItems = categoryMap.get(category)!;
 
-      if (catItems.has(key)) {
-        const existing = catItems.get(key)!;
-        existing.amount += ing.amount;
+      if (isToTaste) {
+        item.toTaste = true;
+        continue;
+      }
+
+      const totals = unitTotals.get(ing.id)!;
+      // Preserve the first-seen casing for display by keying on lowercase
+      // but storing the original-cased unit on the quantity record.
+      const existing = totals.get(normalizedUnit);
+      if (existing != null) {
+        totals.set(normalizedUnit, existing + ing.amount);
       } else {
-        catItems.set(key, {
-          name: ing.name,
-          amount: ing.amount,
-          unit: ing.unit,
-          original: ing.original,
-          aisle: category,
-        });
+        totals.set(normalizedUnit, ing.amount);
+        item.quantities.push({ amount: ing.amount, unit: rawUnit });
       }
     }
   }
 
+  // Reconcile summed amounts back onto each item's quantities array.
+  for (const [id, item] of itemsById) {
+    const totals = unitTotals.get(id)!;
+    item.quantities = item.quantities.map((q) => ({
+      amount: totals.get(q.unit.toLowerCase()) ?? q.amount,
+      unit: q.unit,
+    }));
+  }
+
+  // Bucket items by aisle, then sort.
+  const categoryMap = new Map<string, GroceryItem[]>();
+  for (const item of itemsById.values()) {
+    if (!categoryMap.has(item.aisle)) categoryMap.set(item.aisle, []);
+    categoryMap.get(item.aisle)!.push(item);
+  }
+
   const categories: GroceryCategory[] = Array.from(categoryMap.entries())
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([category, itemMap]) => ({
+    .map(([category, items]) => ({
       category,
-      items: Array.from(itemMap.values()),
+      items: items.sort((a, b) => a.name.localeCompare(b.name)),
     }));
 
   const totalItems = categories.reduce((sum, cat) => sum + cat.items.length, 0);

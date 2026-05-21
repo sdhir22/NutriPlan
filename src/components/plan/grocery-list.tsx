@@ -1,4 +1,22 @@
-import type { GroceryList } from "@/lib/types";
+import type { GroceryItem, GroceryList, GroceryQuantity } from "@/lib/types";
+
+function formatAmount(n: number): string {
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(1).replace(/\.0$/, "");
+}
+
+function formatQuantity(q: GroceryQuantity): string {
+  return `${formatAmount(q.amount)} ${q.unit}`.trim();
+}
+
+function formatGroceryLine(item: GroceryItem): string {
+  const qtys = item.quantities
+    .filter((q) => q.amount > 0)
+    .map(formatQuantity)
+    .join(" + ");
+  const base = qtys ? `${qtys} ${item.name}` : item.name;
+  return item.toTaste ? `${base} (to taste)` : base;
+}
 
 export function GroceryList({ groceryList }: { groceryList: GroceryList }) {
   return (
@@ -18,13 +36,13 @@ export function GroceryList({ groceryList }: { groceryList: GroceryList }) {
           >
             <h3 className="mb-3 font-semibold text-foreground">{cat.category}</h3>
             <ul className="space-y-2">
-              {cat.items.map((item, i) => (
-                <li key={i} className="flex items-start gap-2.5 text-sm text-muted">
+              {cat.items.map((item) => (
+                <li key={item.id} className="flex items-start gap-2.5 text-sm text-muted">
                   <span
                     className="mt-0.5 h-4 w-4 shrink-0 rounded border border-border bg-background"
                     aria-hidden
                   />
-                  {item.original}
+                  {formatGroceryLine(item)}
                 </li>
               ))}
             </ul>
